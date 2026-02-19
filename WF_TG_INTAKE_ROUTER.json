@@ -1,0 +1,725 @@
+{
+  "name": "WF_TG_INTAKE_ROUTER",
+  "nodes": [
+    {
+      "parameters": {
+        "updates": [
+          "message",
+          "callback_query"
+        ],
+        "additionalFields": {}
+      },
+      "id": "tg_trigger",
+      "name": "Telegram Trigger",
+      "type": "n8n-nodes-base.telegramTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -1600,
+        200
+      ],
+      "credentials": {
+        "telegramApi": {
+          "id": "={{$env.TELEGRAM_BOT_CREDENTIAL_ID}}",
+          "name": "Telegram Bot"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const upd = $json;\nconst msg = upd.message || {};\nconst cb = upd.callback_query || {};\nconst isCallback = !!upd.callback_query;\nconst text = msg.text || cb.data || '';\nconst isVoice = !!msg.voice;\nreturn [{\n  update_id: upd.update_id,\n  is_callback: isCallback,\n  callback_data: cb.data || null,\n  callback_query_id: cb.id || null,\n  text_in: text,\n  voice_file_id: isVoice ? msg.voice.file_id : null,\n  source_type: isVoice ? 'voice' : 'text',\n  tg_chat_id: msg.chat?.id || cb.message?.chat?.id || null,\n  tg_message_id: msg.message_id || cb.message?.message_id || null,\n  user_id: msg.from?.id || cb.from?.id || null,\n  username: msg.from?.username || cb.from?.username || ''\n}];"
+      },
+      "id": "normalize",
+      "name": "Normalize Update",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1380,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "is_voice",
+              "leftValue": "={{$json.voice_file_id}}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "if_voice",
+      "name": "If Voice",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -1160,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "file",
+        "operation": "get",
+        "fileId": "={{$json.voice_file_id}}"
+      },
+      "id": "tg_get_file",
+      "name": "Telegram Get File",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        -960,
+        80
+      ],
+      "credentials": {
+        "telegramApi": {
+          "id": "={{$env.TELEGRAM_BOT_CREDENTIAL_ID}}",
+          "name": "Telegram Bot"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{'https://api.telegram.org/file/bot' + $env.TELEGRAM_BOT_TOKEN + '/' + $json.result.file_path}}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "file"
+            }
+          }
+        }
+      },
+      "id": "download_voice",
+      "name": "Download Voice",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -760,
+        80
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "audio",
+        "operation": "transcribe",
+        "binaryPropertyName": "data",
+        "options": {
+          "model": "gpt-4o-mini-transcribe"
+        }
+      },
+      "id": "openai_transcribe",
+      "name": "OpenAI Transcribe",
+      "type": "n8n-nodes-base.openAi",
+      "typeVersion": 1.8,
+      "position": [
+        -560,
+        80
+      ],
+      "credentials": {
+        "openAiApi": {
+          "id": "={{$env.OPENAI_CREDENTIAL_ID}}",
+          "name": "OpenAI"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "combinationMode": "mergeByPosition"
+      },
+      "id": "merge_voice_text",
+      "name": "Merge Voice->Text",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [
+        -340,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const src = $json;\nif (src.text) src.text_in = src.text;\nif (!src.text_in && src.callback_data) src.text_in = src.callback_data;\nreturn [src];"
+      },
+      "id": "set_text",
+      "name": "Set Final Text",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -120,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "chat",
+        "operation": "create",
+        "model": "gpt-4o-mini",
+        "messages": {
+          "values": [
+            {
+              "role": "system",
+              "content": "Ты парсер намерений Telegram-ассистента. Возвращай ТОЛЬКО JSON без markdown и текста вокруг. Таймзона: Europe/Amsterdam. Нормализуй относительные даты: сегодня/завтра/послезавтра/утром/вечером. Схема ответа: {\"intent\":\"idea_add|ideas_list|event_create|event_cancel|event_reschedule|today_digest|help|unknown\",\"confidence\":0..1,\"idea\":{\"category\":\"video|reels|work|personal|null\",\"title\":\"\",\"details\":\"\",\"tags\":[]},\"event\":{\"title\":\"\",\"datetime_start_iso\":\"\",\"duration_min\":60,\"remind_offset_min\":null,\"location\":\"\",\"notes\":\"\"},\"cancel\":{\"keywords\":[],\"date_hint\":\"\",\"time_hint\":\"\",\"use_last_created\":false},\"reschedule\":{\"keywords\":[],\"date_hint\":\"\",\"time_hint\":\"\",\"new_datetime_start_iso\":\"\"},\"raw\":\"\"}. Для /ideas intent=ideas_list, /today intent=today_digest. Фраза 'отмени её' => intent=event_cancel и use_last_created=true."
+            },
+            {
+              "content": "={{$json.text_in}}"
+            }
+          ]
+        },
+        "simplify": true,
+        "jsonOutput": true
+      },
+      "id": "openai_intent",
+      "name": "OpenAI Intent Parser",
+      "type": "n8n-nodes-base.openAi",
+      "typeVersion": 1.8,
+      "position": [
+        120,
+        200
+      ],
+      "credentials": {
+        "openAiApi": {
+          "id": "={{$env.OPENAI_CREDENTIAL_ID}}",
+          "name": "OpenAI"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "combinationMode": "mergeByPosition"
+      },
+      "id": "merge_context",
+      "name": "Merge Context+Intent",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [
+        340,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "fieldToSplitOut": "intent"
+      },
+      "id": "noop",
+      "name": "Noop",
+      "type": "n8n-nodes-base.splitOut",
+      "typeVersion": 1,
+      "position": [
+        520,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "version": 2,
+                  "leftValue": "",
+                  "caseSensitive": true,
+                  "typeValidation": "strict"
+                },
+                "combinator": "and",
+                "conditions": [
+                  {
+                    "leftValue": "={{$json.intent}}",
+                    "rightValue": "idea_add",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "conditions": {
+                "options": {
+                  "version": 2
+                },
+                "combinator": "and",
+                "conditions": [
+                  {
+                    "leftValue": "={{$json.intent}}",
+                    "rightValue": "ideas_list",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "conditions": {
+                "options": {
+                  "version": 2
+                },
+                "combinator": "and",
+                "conditions": [
+                  {
+                    "leftValue": "={{$json.intent}}",
+                    "rightValue": "event_create",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "conditions": {
+                "options": {
+                  "version": 2
+                },
+                "combinator": "and",
+                "conditions": [
+                  {
+                    "leftValue": "={{$json.intent}}",
+                    "rightValue": "event_cancel",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "conditions": {
+                "options": {
+                  "version": 2
+                },
+                "combinator": "and",
+                "conditions": [
+                  {
+                    "leftValue": "={{$json.intent}}",
+                    "rightValue": "event_reschedule",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "conditions": {
+                "options": {
+                  "version": 2
+                },
+                "combinator": "and",
+                "conditions": [
+                  {
+                    "leftValue": "={{$json.intent}}",
+                    "rightValue": "today_digest",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      },
+      "id": "switch_intent",
+      "name": "Switch Intent",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        760,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "workflowId": "WF_IDEA_ADD_HANDLER",
+        "mode": "each",
+        "options": {}
+      },
+      "id": "exec_idea_add",
+      "name": "Execute Idea Add Handler",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        1020,
+        -120
+      ]
+    },
+    {
+      "parameters": {
+        "workflowId": "WF_IDEAS_LIST_HANDLER",
+        "mode": "each",
+        "options": {}
+      },
+      "id": "exec_ideas_list",
+      "name": "Execute Ideas List Handler",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        1020,
+        -20
+      ]
+    },
+    {
+      "parameters": {
+        "workflowId": "WF_EVENT_CREATE_HANDLER",
+        "mode": "each",
+        "options": {}
+      },
+      "id": "exec_event_create",
+      "name": "Execute Event Create Handler",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        1020,
+        80
+      ]
+    },
+    {
+      "parameters": {
+        "workflowId": "WF_EVENT_CANCEL_HANDLER",
+        "mode": "each",
+        "options": {}
+      },
+      "id": "exec_event_cancel",
+      "name": "Execute Event Cancel Handler",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        1020,
+        180
+      ]
+    },
+    {
+      "parameters": {
+        "workflowId": "WF_EVENT_RESCHEDULE_HANDLER",
+        "mode": "each",
+        "options": {}
+      },
+      "id": "exec_event_reschedule",
+      "name": "Execute Event Reschedule Handler",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        1020,
+        280
+      ]
+    },
+    {
+      "parameters": {
+        "workflowId": "WF_TODAY_HANDLER",
+        "mode": "each",
+        "options": {}
+      },
+      "id": "exec_today",
+      "name": "Execute Today Handler",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        1020,
+        380
+      ]
+    },
+    {
+      "parameters": {
+        "chatId": "={{$json.tg_chat_id}}",
+        "text": "=🤖 Не понял запрос. Доступно: идеи, /ideas, /today, создать/отменить/перенести встречу.",
+        "additionalFields": {}
+      },
+      "id": "send_unknown",
+      "name": "Telegram Unknown",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        1020,
+        500
+      ],
+      "credentials": {
+        "telegramApi": {
+          "id": "={{$env.TELEGRAM_BOT_CREDENTIAL_ID}}",
+          "name": "Telegram Bot"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": "={{$env.SPREADSHEET_ID}}",
+        "sheetName": "Logs",
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "ts_iso": "={{$now.toISO()}}",
+            "level": "info",
+            "user_id": "={{$json.user_id}}",
+            "username": "={{$json.username}}",
+            "action": "router",
+            "intent": "={{$json.intent || 'unknown'}}",
+            "confidence": "={{$json.confidence || 0}}",
+            "text_in": "={{$json.text_in}}",
+            "result_json": "={{JSON.stringify($json)}}",
+            "error": ""
+          }
+        }
+      },
+      "id": "log_router",
+      "name": "Log Router Action",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        1240,
+        200
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "={{$env.GOOGLE_CREDENTIAL_ID}}",
+          "name": "Google"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Telegram Trigger": {
+      "main": [
+        [
+          {
+            "node": "Normalize Update",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Update": {
+      "main": [
+        [
+          {
+            "node": "If Voice",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Merge Voice->Text",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "If Voice": {
+      "main": [
+        [
+          {
+            "node": "Telegram Get File",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Merge Voice->Text",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Telegram Get File": {
+      "main": [
+        [
+          {
+            "node": "Download Voice",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Download Voice": {
+      "main": [
+        [
+          {
+            "node": "OpenAI Transcribe",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenAI Transcribe": {
+      "main": [
+        [
+          {
+            "node": "Merge Voice->Text",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge Voice->Text": {
+      "main": [
+        [
+          {
+            "node": "Set Final Text",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Merge Context+Intent",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Set Final Text": {
+      "main": [
+        [
+          {
+            "node": "OpenAI Intent Parser",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenAI Intent Parser": {
+      "main": [
+        [
+          {
+            "node": "Merge Context+Intent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge Context+Intent": {
+      "main": [
+        [
+          {
+            "node": "Noop",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Noop": {
+      "main": [
+        [
+          {
+            "node": "Switch Intent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Switch Intent": {
+      "main": [
+        [
+          {
+            "node": "Execute Idea Add Handler",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Execute Ideas List Handler",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Execute Event Create Handler",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Execute Event Cancel Handler",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Execute Event Reschedule Handler",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Execute Today Handler",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Telegram Unknown",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Execute Idea Add Handler": {
+      "main": [[{"node":"Log Router Action","type":"main","index":0}]]
+    },
+    "Execute Ideas List Handler": {
+      "main": [[{"node":"Log Router Action","type":"main","index":0}]]
+    },
+    "Execute Event Create Handler": {
+      "main": [[{"node":"Log Router Action","type":"main","index":0}]]
+    },
+    "Execute Event Cancel Handler": {
+      "main": [[{"node":"Log Router Action","type":"main","index":0}]]
+    },
+    "Execute Event Reschedule Handler": {
+      "main": [[{"node":"Log Router Action","type":"main","index":0}]]
+    },
+    "Execute Today Handler": {
+      "main": [[{"node":"Log Router Action","type":"main","index":0}]]
+    },
+    "Telegram Unknown": {
+      "main": [[{"node":"Log Router Action","type":"main","index":0}]]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Europe/Amsterdam"
+  },
+  "versionId": "1",
+  "meta": {
+    "templateCredsSetupCompleted": false
+  },
+  "pinData": {},
+  "id": "WF_TG_INTAKE_ROUTER"
+}

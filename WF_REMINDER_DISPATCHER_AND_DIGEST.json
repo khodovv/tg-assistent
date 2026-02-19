@@ -1,0 +1,30 @@
+[
+  {
+    "name": "WF_REMINDER_DISPATCHER",
+    "nodes": [
+      {"parameters":{"rule":{"interval":[{"field":"minutes","minutesInterval":2}]}} ,"id":"cron2","name":"Cron every 2 min","type":"n8n-nodes-base.cron","typeVersion":1,"position":[-620,120]},
+      {"parameters":{"operation":"read","documentId":"={{$env.SPREADSHEET_ID}}","sheetName":"Reminders"},"id":"read_rem","name":"Read Reminders","type":"n8n-nodes-base.googleSheets","typeVersion":4.5,"position":[-400,120],"credentials":{"googleSheetsOAuth2Api":{"id":"={{$env.GOOGLE_CREDENTIAL_ID}}","name":"Google"}}},
+      {"parameters":{"jsCode":"const now=DateTime.now().setZone('Europe/Amsterdam'); return items.filter(i=>i.json.status==='pending' && DateTime.fromISO(i.json.remind_at_iso)<=now);"},"id":"filter_due","name":"Filter Due Pending","type":"n8n-nodes-base.code","typeVersion":2,"position":[-180,120]},
+      {"parameters":{"chatId":"={{$json.tg_chat_id}}","text":"={{$json.message}}"},"id":"send_rem","name":"Send Telegram Reminder","type":"n8n-nodes-base.telegram","typeVersion":1.2,"position":[40,60],"credentials":{"telegramApi":{"id":"={{$env.TELEGRAM_BOT_CREDENTIAL_ID}}","name":"Telegram Bot"}},"continueOnFail":true},
+      {"parameters":{"operation":"appendOrUpdate","documentId":"={{$env.SPREADSHEET_ID}}","sheetName":"Reminders","columns":{"mappingMode":"defineBelow","value":{"reminder_id":"={{$json.reminder_id}}","status":"={{$json.error ? 'error' : 'sent'}}","sent_at_iso":"={{$json.error ? '' : $now.toISO()}}","error":"={{$json.error?.message || ''}}"},"matchingColumns":["reminder_id"]}},"id":"upd_rem","name":"Update Reminder Status","type":"n8n-nodes-base.googleSheets","typeVersion":4.5,"position":[260,60],"credentials":{"googleSheetsOAuth2Api":{"id":"={{$env.GOOGLE_CREDENTIAL_ID}}","name":"Google"}}}
+    ],
+    "connections":{"Cron every 2 min":{"main":[[{"node":"Read Reminders","type":"main","index":0}]]},"Read Reminders":{"main":[[{"node":"Filter Due Pending","type":"main","index":0}]]},"Filter Due Pending":{"main":[[{"node":"Send Telegram Reminder","type":"main","index":0}]]},"Send Telegram Reminder":{"main":[[{"node":"Update Reminder Status","type":"main","index":0}]]}},
+    "active": false,
+    "settings": {"timezone":"Europe/Amsterdam"},
+    "id": "WF_REMINDER_DISPATCHER"
+  },
+  {
+    "name": "WF_MORNING_DIGEST",
+    "nodes": [
+      {"parameters":{"triggerTimes":{"item":[{"mode":"everyDay","hour":8,"minute":30}]}} ,"id":"cron_morning","name":"Cron 08:30","type":"n8n-nodes-base.cron","typeVersion":1,"position":[-460,120]},
+      {"parameters":{"operation":"getAll","calendar":"={{$env.CALENDAR_ID}}","returnAll":true,"timeMin":"={{$now.setZone('Europe/Amsterdam').startOf('day').toISO()}}","timeMax":"={{$now.setZone('Europe/Amsterdam').endOf('day').toISO()}}"},"id":"list_today","name":"List Today Events","type":"n8n-nodes-base.googleCalendar","typeVersion":1.3,"position":[-240,120],"credentials":{"googleCalendarOAuth2Api":{"id":"={{$env.GOOGLE_CREDENTIAL_ID}}","name":"Google"}}},
+      {"parameters":{"jsCode":"const txt = items.map((i,idx)=>`${idx+1}) ${DateTime.fromISO(i.json.start.dateTime||i.json.start).setZone('Europe/Amsterdam').toFormat('HH:mm')} ${i.json.summary||''}`).join('\\n') || 'Событий нет'; return [{digest: `🕒 План на сегодня:\n${txt}`}];"},"id":"fmt_digest","name":"Format Digest","type":"n8n-nodes-base.code","typeVersion":2,"position":[-20,120]},
+      {"parameters":{"operation":"read","documentId":"={{$env.SPREADSHEET_ID}}","sheetName":"Settings"},"id":"read_settings","name":"Read Settings","type":"n8n-nodes-base.googleSheets","typeVersion":4.5,"position":[200,120],"credentials":{"googleSheetsOAuth2Api":{"id":"={{$env.GOOGLE_CREDENTIAL_ID}}","name":"Google"}}},
+      {"parameters":{"chatId":"={{$json.digest_chat_id || $env.DEFAULT_DIGEST_CHAT_ID}}","text":"={{$json.digest}}"},"id":"send_digest","name":"Send Digest","type":"n8n-nodes-base.telegram","typeVersion":1.2,"position":[420,120],"credentials":{"telegramApi":{"id":"={{$env.TELEGRAM_BOT_CREDENTIAL_ID}}","name":"Telegram Bot"}}}
+    ],
+    "connections":{"Cron 08:30":{"main":[[{"node":"List Today Events","type":"main","index":0}]]},"List Today Events":{"main":[[{"node":"Format Digest","type":"main","index":0}]]},"Format Digest":{"main":[[{"node":"Read Settings","type":"main","index":0}]]},"Read Settings":{"main":[[{"node":"Send Digest","type":"main","index":0}]]}},
+    "active": false,
+    "settings": {"timezone":"Europe/Amsterdam"},
+    "id": "WF_MORNING_DIGEST"
+  }
+]
