@@ -1,0 +1,21 @@
+{
+  "name": "Reminder_Worker",
+  "nodes": [
+    { "parameters": { "rule": { "interval": [{ "field": "minutes", "minutesInterval": 1 }] } }, "id": "cron", "name": "Cron every minute", "type": "n8n-nodes-base.cron", "typeVersion": 1, "position": [-760, 260] },
+    { "parameters": { "operation": "read", "documentId": "={{$env.SPREADSHEET_ID}}", "sheetName": "Tasks" }, "id": "read_tasks", "name": "Read Tasks", "type": "n8n-nodes-base.googleSheets", "typeVersion": 4, "position": [-540, 260], "credentials": { "googleSheetsOAuth2Api": { "id": "={{$env.GOOGLE_CREDENTIAL_ID}}", "name": "Google" } } },
+    { "parameters": { "jsCode": "const tz = $env.DEFAULT_TIMEZONE || 'Europe/Amsterdam'; const now = DateTime.now().setZone(tz); return items.filter(i => i.json.status === 'open' && i.json.next_remind_at_iso && DateTime.fromISO(i.json.next_remind_at_iso).setZone(tz) <= now);" }, "id": "due", "name": "Filter Due", "type": "n8n-nodes-base.code", "typeVersion": 2, "position": [-320, 260] },
+    { "parameters": { "chatId": "={{$json.tg_chat_id}}", "text": "=🔔 {{$json.title}}", "replyMarkup": "={\"inline_keyboard\":[[{\"text\":\"✅ Done\",\"callback_data\":\"task_done:{{$json.task_id}}\"},{\"text\":\"🕒 Snooze 10m\",\"callback_data\":\"task_snooze:{{$json.task_id}}:10\"},{\"text\":\"❌ Cancel\",\"callback_data\":\"task_cancel:{{$json.task_id}}\"}]]}" }, "id": "send", "name": "Send Reminder", "type": "n8n-nodes-base.telegram", "typeVersion": 1, "position": [-100, 260], "credentials": { "telegramApi": { "id": "={{$env.TELEGRAM_BOT_CREDENTIAL_ID}}", "name": "Telegram Bot" } } },
+    { "parameters": { "operation": "appendOrUpdate", "documentId": "={{$env.SPREADSHEET_ID}}", "sheetName": "Tasks", "columns": { "matchingColumns": ["task_id"], "mappingMode": "defineBelow", "value": { "task_id": "={{$json.task_id}}", "last_reminded_at_iso": "={{$now.toISO()}}", "next_remind_at_iso": "={{DateTime.fromISO($json.due_at_iso).minus({minutes:15}).toISO()}}", "updated_at_iso": "={{$now.toISO()}}" } } }, "id": "update_after_send", "name": "Update Task After Send", "type": "n8n-nodes-base.googleSheets", "typeVersion": 4, "position": [120, 260], "credentials": { "googleSheetsOAuth2Api": { "id": "={{$env.GOOGLE_CREDENTIAL_ID}}", "name": "Google" } } },
+    { "parameters": { "operation": "append", "documentId": "={{$env.SPREADSHEET_ID}}", "sheetName": "Logs", "columns": { "mappingMode": "defineBelow", "value": { "log_id": "={{crypto.randomUUID()}}", "ts_iso": "={{$now.toISO()}}", "level": "info", "workflow": "Reminder_Worker", "user_id": "={{$json.user_id}}", "username": "={{$json.username}}", "action": "send_reminder", "intent": "system", "source": "cron", "input_text": "", "payload_json": "={{JSON.stringify($json)}}", "error": "" } } }, "id": "log", "name": "Log Reminder", "type": "n8n-nodes-base.googleSheets", "typeVersion": 4, "position": [340, 260], "credentials": { "googleSheetsOAuth2Api": { "id": "={{$env.GOOGLE_CREDENTIAL_ID}}", "name": "Google" } } }
+  ],
+  "connections": {
+    "Cron every minute": { "main": [[{ "node": "Read Tasks", "type": "main", "index": 0 }]] },
+    "Read Tasks": { "main": [[{ "node": "Filter Due", "type": "main", "index": 0 }]] },
+    "Filter Due": { "main": [[{ "node": "Send Reminder", "type": "main", "index": 0 }]] },
+    "Send Reminder": { "main": [[{ "node": "Update Task After Send", "type": "main", "index": 0 }]] },
+    "Update Task After Send": { "main": [[{ "node": "Log Reminder", "type": "main", "index": 0 }]] }
+  },
+  "settings": { "timezone": "Europe/Amsterdam" },
+  "active": false,
+  "id": "Reminder_Worker"
+}

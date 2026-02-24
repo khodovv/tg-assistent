@@ -1,0 +1,223 @@
+{
+  "name": "TG_Inbound_Router",
+  "nodes": [
+    {
+      "parameters": { "updates": ["message", "callback_query"] },
+      "id": "tg_trigger",
+      "name": "Telegram Trigger",
+      "type": "n8n-nodes-base.telegramTrigger",
+      "typeVersion": 1,
+      "position": [-1320, 220],
+      "credentials": { "telegramApi": { "id": "={{$env.TELEGRAM_BOT_CREDENTIAL_ID}}", "name": "Telegram Bot" } }
+    },
+    {
+      "parameters": {
+        "jsCode": "const u = $json;\nconst m = u.message || {};\nconst c = u.callback_query || {};\nreturn [{\n  update_id: u.update_id,\n  source_type: m.voice ? 'voice' : 'text',\n  text_in: m.text || c.data || '',\n  callback_data: c.data || '',\n  callback_query_id: c.id || '',\n  tg_chat_id: m.chat?.id || c.message?.chat?.id,\n  tg_message_id: m.message_id || c.message?.message_id,\n  user_id: m.from?.id || c.from?.id,\n  username: m.from?.username || c.from?.username || '',\n  voice_file_id: m.voice?.file_id || ''\n}];"
+      },
+      "id": "normalize",
+      "name": "Normalize Update",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-1100, 220]
+    },
+    {
+      "parameters": {
+        "conditions": { "conditions": [{ "leftValue": "={{$json.voice_file_id}}", "operator": { "operation": "notEmpty", "type": "string" } }] }
+      },
+      "id": "if_voice",
+      "name": "If Voice",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [-900, 220]
+    },
+    {
+      "parameters": { "resource": "file", "operation": "get", "fileId": "={{$json.voice_file_id}}" },
+      "id": "tg_get_file",
+      "name": "Telegram Get File",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1,
+      "position": [-700, 80],
+      "credentials": { "telegramApi": { "id": "={{$env.TELEGRAM_BOT_CREDENTIAL_ID}}", "name": "Telegram Bot" } }
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{'https://api.telegram.org/file/bot' + $env.TELEGRAM_BOT_TOKEN + '/' + $json.result.file_path}}",
+        "options": { "response": { "response": { "responseFormat": "file" } } }
+      },
+      "id": "download_voice",
+      "name": "Download Voice",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [-500, 80]
+    },
+    {
+      "parameters": { "resource": "audio", "operation": "transcribe", "binaryPropertyName": "data", "options": { "model": "gpt-4o-mini-transcribe" } },
+      "id": "transcribe",
+      "name": "OpenAI Transcribe",
+      "type": "n8n-nodes-base.openAi",
+      "typeVersion": 1,
+      "position": [-300, 80],
+      "credentials": { "openAiApi": { "id": "={{$env.OPENAI_CREDENTIAL_ID}}", "name": "OpenAI" } }
+    },
+    {
+      "parameters": { "mode": "combine", "combinationMode": "mergeByPosition" },
+      "id": "merge_voice",
+      "name": "Merge Voice Context",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [-120, 220]
+    },
+    {
+      "parameters": {
+        "jsCode": "const x = $json;\nif (x.text) x.text_in = x.text;\nconst now = DateTime.now().setZone('UTC').toISO();\nx.received_at_iso = now;\nreturn [x];"
+      },
+      "id": "final_text",
+      "name": "Set Final Text",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [80, 220]
+    },
+    {
+      "parameters": {
+        "resource": "chat",
+        "operation": "create",
+        "model": "gpt-4o-mini",
+        "jsonOutput": true,
+        "messages": {
+          "values": [
+            {
+              "role": "system",
+              "content": "Return ONLY valid JSON. Schema: {\"intent\":\"idea_create|task_create_or_update|task_list_today|help|callback_action|unknown\",\"confidence\":0..1,\"idea\":{\"title\":\"\",\"details\":\"\",\"tags\":[]},\"task\":{\"task_id\":\"\",\"title\":\"\",\"details\":\"\",\"priority\":\"low|normal|high\",\"status\":\"open|done|canceled\",\"due_at_iso\":\"\",\"calendar_create\":false,\"duration_min\":60,\"location\":\"\",\"remind_policy_minutes\":[60,15]},\"callback\":{\"action\":\"done|snooze|cancel|none\",\"task_id\":\"\",\"snooze_min\":10},\"raw_text\":\"\"}. Timezone: use Config.timezone, default Europe/Amsterdam. If input starts with task_done:, task_snooze:, task_cancel:, parse as callback_action and extract fields."
+            },
+            { "content": "={{$json.text_in || $json.callback_data}}" }
+          ]
+        }
+      },
+      "id": "intent",
+      "name": "OpenAI JSON Intent",
+      "type": "n8n-nodes-base.openAi",
+      "typeVersion": 1,
+      "position": [300, 220],
+      "credentials": { "openAiApi": { "id": "={{$env.OPENAI_CREDENTIAL_ID}}", "name": "OpenAI" } }
+    },
+    {
+      "parameters": { "mode": "combine", "combinationMode": "mergeByPosition" },
+      "id": "merge_intent",
+      "name": "Merge Context + Intent",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [520, 220]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            { "conditions": { "conditions": [{ "leftValue": "={{$json.intent}}", "rightValue": "idea_create", "operator": { "operation": "equals", "type": "string" } }] } },
+            { "conditions": { "conditions": [{ "leftValue": "={{$json.intent}}", "rightValue": "task_create_or_update", "operator": { "operation": "equals", "type": "string" } }] } },
+            { "conditions": { "conditions": [{ "leftValue": "={{$json.intent}}", "rightValue": "callback_action", "operator": { "operation": "equals", "type": "string" } }] } },
+            { "conditions": { "conditions": [{ "leftValue": "={{$json.intent}}", "rightValue": "task_list_today", "operator": { "operation": "equals", "type": "string" } }] } }
+          ]
+        }
+      },
+      "id": "switch",
+      "name": "Switch Intent",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [740, 220]
+    },
+    {
+      "parameters": { "workflowId": "Ideas_Create", "mode": "each" },
+      "id": "exec_ideas",
+      "name": "Execute Ideas_Create",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1,
+      "position": [960, 80]
+    },
+    {
+      "parameters": { "workflowId": "Tasks_CreateOrUpdate", "mode": "each" },
+      "id": "exec_tasks",
+      "name": "Execute Tasks_CreateOrUpdate",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1,
+      "position": [960, 180]
+    },
+    {
+      "parameters": { "workflowId": "Reminder_Worker", "mode": "each" },
+      "id": "exec_callback",
+      "name": "Execute Reminder_Worker (callback)",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1,
+      "position": [960, 280]
+    },
+    {
+      "parameters": { "chatId": "={{$json.tg_chat_id}}", "text": "=🕒 Используй /today в Daily_Digests или Tasks list workflow." },
+      "id": "today_stub",
+      "name": "Today Stub",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1,
+      "position": [960, 380],
+      "credentials": { "telegramApi": { "id": "={{$env.TELEGRAM_BOT_CREDENTIAL_ID}}", "name": "Telegram Bot" } }
+    },
+    {
+      "parameters": { "chatId": "={{$json.tg_chat_id}}", "text": "=🤖 Не понял. Примеры: 'идея: ...', 'задача ...', '/today'." },
+      "id": "unknown",
+      "name": "Unknown Reply",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1,
+      "position": [960, 500],
+      "credentials": { "telegramApi": { "id": "={{$env.TELEGRAM_BOT_CREDENTIAL_ID}}", "name": "Telegram Bot" } }
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": "={{$env.SPREADSHEET_ID}}",
+        "sheetName": "Logs",
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "log_id": "={{crypto.randomUUID()}}",
+            "ts_iso": "={{$now.toISO()}}",
+            "level": "info",
+            "workflow": "TG_Inbound_Router",
+            "user_id": "={{$json.user_id}}",
+            "username": "={{$json.username}}",
+            "action": "route",
+            "intent": "={{$json.intent || 'unknown'}}",
+            "source": "={{$json.source_type}}",
+            "input_text": "={{$json.text_in}}",
+            "payload_json": "={{JSON.stringify($json)}}",
+            "error": ""
+          }
+        }
+      },
+      "id": "log",
+      "name": "Log Router",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4,
+      "position": [1180, 220],
+      "credentials": { "googleSheetsOAuth2Api": { "id": "={{$env.GOOGLE_CREDENTIAL_ID}}", "name": "Google" } }
+    }
+  ],
+  "connections": {
+    "Telegram Trigger": { "main": [[{ "node": "Normalize Update", "type": "main", "index": 0 }]] },
+    "Normalize Update": { "main": [[{ "node": "If Voice", "type": "main", "index": 0 }, { "node": "Merge Voice Context", "type": "main", "index": 1 }]] },
+    "If Voice": { "main": [[{ "node": "Telegram Get File", "type": "main", "index": 0 }], [{ "node": "Merge Voice Context", "type": "main", "index": 0 }]] },
+    "Telegram Get File": { "main": [[{ "node": "Download Voice", "type": "main", "index": 0 }]] },
+    "Download Voice": { "main": [[{ "node": "OpenAI Transcribe", "type": "main", "index": 0 }]] },
+    "OpenAI Transcribe": { "main": [[{ "node": "Merge Voice Context", "type": "main", "index": 0 }]] },
+    "Merge Voice Context": { "main": [[{ "node": "Set Final Text", "type": "main", "index": 0 }, { "node": "Merge Context + Intent", "type": "main", "index": 1 }]] },
+    "Set Final Text": { "main": [[{ "node": "OpenAI JSON Intent", "type": "main", "index": 0 }]] },
+    "OpenAI JSON Intent": { "main": [[{ "node": "Merge Context + Intent", "type": "main", "index": 0 }]] },
+    "Merge Context + Intent": { "main": [[{ "node": "Switch Intent", "type": "main", "index": 0 }]] },
+    "Switch Intent": { "main": [[{ "node": "Execute Ideas_Create", "type": "main", "index": 0 }], [{ "node": "Execute Tasks_CreateOrUpdate", "type": "main", "index": 0 }], [{ "node": "Execute Reminder_Worker (callback)", "type": "main", "index": 0 }], [{ "node": "Today Stub", "type": "main", "index": 0 }], [{ "node": "Unknown Reply", "type": "main", "index": 0 }]] },
+    "Execute Ideas_Create": { "main": [[{ "node": "Log Router", "type": "main", "index": 0 }]] },
+    "Execute Tasks_CreateOrUpdate": { "main": [[{ "node": "Log Router", "type": "main", "index": 0 }]] },
+    "Execute Reminder_Worker (callback)": { "main": [[{ "node": "Log Router", "type": "main", "index": 0 }]] },
+    "Today Stub": { "main": [[{ "node": "Log Router", "type": "main", "index": 0 }]] },
+    "Unknown Reply": { "main": [[{ "node": "Log Router", "type": "main", "index": 0 }]] }
+  },
+  "settings": { "timezone": "Europe/Amsterdam", "executionOrder": "v1" },
+  "active": false,
+  "id": "TG_Inbound_Router"
+}

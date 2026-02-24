@@ -1,0 +1,134 @@
+[
+  {
+    "name": "WF_IDEA_ADD_HANDLER",
+    "nodes": [
+      {
+        "parameters": {
+          "jsCode": "const i = $json.idea || {};\nconst id = crypto.randomUUID();\nreturn [{...$json, idea_id:id, created_at_iso:$now.toISO(), created_at_local:$now.setZone('Europe/Amsterdam').toFormat('yyyy-LL-dd HH:mm'), category:i.category || 'personal', title:i.title || $json.text_in, details:i.details || '', tags: JSON.stringify(i.tags || []), status:'new'}];"
+        },
+        "id": "prep_idea",
+        "name": "Prepare Idea Row",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [-260, 120]
+      },
+      {
+        "parameters": {
+          "operation": "append",
+          "documentId": "={{$env.SPREADSHEET_ID}}",
+          "sheetName": "Ideas",
+          "columns": {
+            "mappingMode": "defineBelow",
+            "value": {
+              "idea_id": "={{$json.idea_id}}",
+              "created_at_iso": "={{$json.created_at_iso}}",
+              "created_at_local": "={{$json.created_at_local}}",
+              "user_id": "={{$json.user_id}}",
+              "username": "={{$json.username}}",
+              "source_type": "={{$json.source_type}}",
+              "category": "={{$json.category}}",
+              "title": "={{$json.title}}",
+              "details": "={{$json.details}}",
+              "tags": "={{$json.tags}}",
+              "status": "new",
+              "used_at_iso": "",
+              "link": "",
+              "raw_text": "={{$json.text_in}}",
+              "tg_chat_id": "={{$json.tg_chat_id}}",
+              "tg_message_id": "={{$json.tg_message_id}}"
+            }
+          }
+        },
+        "id": "append_idea",
+        "name": "Append Idea to Sheets",
+        "type": "n8n-nodes-base.googleSheets",
+        "typeVersion": 4.5,
+        "position": [-40, 120],
+        "credentials": {"googleSheetsOAuth2Api":{"id":"={{$env.GOOGLE_CREDENTIAL_ID}}","name":"Google"}}
+      },
+      {
+        "parameters": {
+          "chatId": "={{$json.tg_chat_id}}",
+          "text": "=✅ Добавил: {{$json.category}} — {{$json.title}}"
+        },
+        "id": "reply_idea",
+        "name": "Reply Idea Added",
+        "type": "n8n-nodes-base.telegram",
+        "typeVersion": 1.2,
+        "position": [180, 120],
+        "credentials": {"telegramApi":{"id":"={{$env.TELEGRAM_BOT_CREDENTIAL_ID}}","name":"Telegram Bot"}}
+      }
+    ],
+    "connections": {
+      "Prepare Idea Row": {"main":[[{"node":"Append Idea to Sheets","type":"main","index":0}]]},
+      "Append Idea to Sheets": {"main":[[{"node":"Reply Idea Added","type":"main","index":0}]]}
+    },
+    "active": false,
+    "settings": {"timezone":"Europe/Amsterdam"},
+    "id": "WF_IDEA_ADD_HANDLER"
+  },
+  {
+    "name": "WF_IDEAS_LIST_HANDLER",
+    "nodes": [
+      {"parameters":{"operation":"read","documentId":"={{$env.SPREADSHEET_ID}}","sheetName":"Ideas"},"id":"read_ideas","name":"Read Ideas","type":"n8n-nodes-base.googleSheets","typeVersion":4.5,"position":[-260,100],"credentials":{"googleSheetsOAuth2Api":{"id":"={{$env.GOOGLE_CREDENTIAL_ID}}","name":"Google"}}},
+      {"parameters":{"jsCode":"const rows = items.map(i=>i.json).filter(r=>r.status==='new').slice(-10).reverse();\nconst lines = rows.map((r,idx)=>`${idx+1}) [${r.category}] ${r.title}`).join('\\n') || 'Нет новых идей';\nreturn [{...$input.first().json, ideas_text:lines}];"},"id":"fmt_ideas","name":"Format Ideas","type":"n8n-nodes-base.code","typeVersion":2,"position":[-40,100]},
+      {"parameters":{"chatId":"={{$json.tg_chat_id}}","text":"=📄 Таблица: {{$env.SPREADSHEET_URL}}\\n\\nПоследние 10 new:\n{{$json.ideas_text}}"},"id":"send_ideas","name":"Send Ideas List","type":"n8n-nodes-base.telegram","typeVersion":1.2,"position":[180,100],"credentials":{"telegramApi":{"id":"={{$env.TELEGRAM_BOT_CREDENTIAL_ID}}","name":"Telegram Bot"}}}
+    ],
+    "connections": {"Read Ideas":{"main":[[{"node":"Format Ideas","type":"main","index":0}]]},"Format Ideas":{"main":[[{"node":"Send Ideas List","type":"main","index":0}]]}},
+    "active": false,
+    "settings": {"timezone":"Europe/Amsterdam"},
+    "id": "WF_IDEAS_LIST_HANDLER"
+  },
+  {
+    "name": "WF_EVENT_CREATE_HANDLER",
+    "nodes": [
+      {"parameters":{"jsCode":"const e=$json.event||{}; const start=e.datetime_start_iso; const dur=e.duration_min||60; const remind=e.remind_offset_min||60; const end=DateTime.fromISO(start).plus({minutes:dur}).toISO(); const uid=crypto.randomUUID(); return [{...$json, assistant_uid:uid, event_title:e.title||'Встреча', start_iso:start,end_iso:end, remind_offset_min:remind, remind_at_iso:DateTime.fromISO(start).minus({minutes:remind}).toISO(), remind_at_local:DateTime.fromISO(start).minus({minutes:remind}).setZone('Europe/Amsterdam').toFormat('yyyy-LL-dd HH:mm')}];"},"id":"prep_event","name":"Prepare Event","type":"n8n-nodes-base.code","typeVersion":2,"position":[-520,120]},
+      {"parameters":{"operation":"create","calendar":"={{$env.CALENDAR_ID}}","start":"={{$json.start_iso}}","end":"={{$json.end_iso}}","additionalFields":{"summary":"={{$json.event_title}}","description":"={{($json.event?.notes || '') + '\nASSISTANT_UID=' + $json.assistant_uid}}","location":"={{$json.event?.location || ''}}"}},"id":"gcal_create","name":"Create Calendar Event","type":"n8n-nodes-base.googleCalendar","typeVersion":1.3,"position":[-300,120],"credentials":{"googleCalendarOAuth2Api":{"id":"={{$env.GOOGLE_CREDENTIAL_ID}}","name":"Google"}}},
+      {"parameters":{"operation":"set","dataStoreId":"tg_assistant_store","key":"={{'last_created_event:' + $json.user_id}}","value":"={{JSON.stringify({event_id:$json.id || $json.eventId, assistant_uid:$item(0).$node['Prepare Event'].json.assistant_uid, start_iso:$item(0).$node['Prepare Event'].json.start_iso, title:$item(0).$node['Prepare Event'].json.event_title})}}"},"id":"store_last","name":"Store Last Created Event","type":"n8n-nodes-base.dataStore","typeVersion":1,"position":[-80,120]},
+      {"parameters":{"operation":"append","documentId":"={{$env.SPREADSHEET_ID}}","sheetName":"Reminders","columns":{"mappingMode":"defineBelow","value":{"reminder_id":"={{crypto.randomUUID()}}","created_at_iso":"={{$now.toISO()}}","user_id":"={{$json.user_id}}","username":"={{$json.username}}","event_id":"={{$json.id || $json.eventId}}","assistant_uid":"={{$item(0).$node['Prepare Event'].json.assistant_uid}}","remind_at_iso":"={{$item(0).$node['Prepare Event'].json.remind_at_iso}}","remind_at_local":"={{$item(0).$node['Prepare Event'].json.remind_at_local}}","remind_offset_min":"={{$item(0).$node['Prepare Event'].json.remind_offset_min}}","message":"={{'🔔 Напоминание: ' + $item(0).$node['Prepare Event'].json.event_title + ' в ' + DateTime.fromISO($item(0).$node['Prepare Event'].json.start_iso).setZone('Europe/Amsterdam').toFormat('HH:mm')}}","status":"pending","sent_at_iso":"","canceled_at_iso":"","error":"","tg_chat_id":"={{$json.tg_chat_id}}"}}},"id":"append_rem","name":"Append Reminder","type":"n8n-nodes-base.googleSheets","typeVersion":4.5,"position":[140,120],"credentials":{"googleSheetsOAuth2Api":{"id":"={{$env.GOOGLE_CREDENTIAL_ID}}","name":"Google"}}},
+      {"parameters":{"chatId":"={{$json.tg_chat_id}}","text":"=✅ Записал встречу: {{DateTime.fromISO($item(0).$node['Prepare Event'].json.start_iso).setZone('Europe/Amsterdam').toFormat('dd LLL yyyy HH:mm')}}. 🔔 Напомню в {{$item(0).$node['Prepare Event'].json.remind_at_local.split(' ')[1]}}"},"id":"send_ok","name":"Send Create Confirmation","type":"n8n-nodes-base.telegram","typeVersion":1.2,"position":[360,120],"credentials":{"telegramApi":{"id":"={{$env.TELEGRAM_BOT_CREDENTIAL_ID}}","name":"Telegram Bot"}}}
+    ],
+    "connections":{"Prepare Event":{"main":[[{"node":"Create Calendar Event","type":"main","index":0}]]},"Create Calendar Event":{"main":[[{"node":"Store Last Created Event","type":"main","index":0}]]},"Store Last Created Event":{"main":[[{"node":"Append Reminder","type":"main","index":0}]]},"Append Reminder":{"main":[[{"node":"Send Create Confirmation","type":"main","index":0}]]}},
+    "active": false,
+    "settings": {"timezone":"Europe/Amsterdam"},
+    "id": "WF_EVENT_CREATE_HANDLER"
+  },
+  {
+    "name": "WF_EVENT_CANCEL_HANDLER",
+    "nodes": [
+      {"parameters":{"jsCode":"if ($json.cancel?.use_last_created){return [{...$json, mode:'last'}];} return [{...$json, mode:'search'}];"},"id":"route_cancel","name":"Route Cancel","type":"n8n-nodes-base.code","typeVersion":2,"position":[-520,140]},
+      {"parameters":{"conditions":{"conditions":[{"leftValue":"={{$json.mode}}","rightValue":"last","operator":{"type":"string","operation":"equals"}}]}},"id":"if_last","name":"If Last Created","type":"n8n-nodes-base.if","typeVersion":2.2,"position":[-300,140]},
+      {"parameters":{"operation":"get","dataStoreId":"tg_assistant_store","key":"={{'last_created_event:' + $json.user_id}}"},"id":"get_last","name":"Get Last Event","type":"n8n-nodes-base.dataStore","typeVersion":1,"position":[-80,60]},
+      {"parameters":{"operation":"delete","calendar":"={{$env.CALENDAR_ID}}","eventId":"={{JSON.parse($json.value).event_id}}"},"id":"del_last","name":"Delete Last Event","type":"n8n-nodes-base.googleCalendar","typeVersion":1.3,"position":[140,60],"credentials":{"googleCalendarOAuth2Api":{"id":"={{$env.GOOGLE_CREDENTIAL_ID}}","name":"Google"}}},
+      {"parameters":{"chatId":"={{$json.tg_chat_id}}","text":"=✅ Событие отменено."},"id":"send_cancel_ok","name":"Send Cancel OK","type":"n8n-nodes-base.telegram","typeVersion":1.2,"position":[360,60],"credentials":{"telegramApi":{"id":"={{$env.TELEGRAM_BOT_CREDENTIAL_ID}}","name":"Telegram Bot"}}}
+    ],
+    "connections":{"Route Cancel":{"main":[[{"node":"If Last Created","type":"main","index":0}]]},"If Last Created":{"main":[[{"node":"Get Last Event","type":"main","index":0}],[]]},"Get Last Event":{"main":[[{"node":"Delete Last Event","type":"main","index":0}]]},"Delete Last Event":{"main":[[{"node":"Send Cancel OK","type":"main","index":0}]]}},
+    "active": false,
+    "settings": {"timezone":"Europe/Amsterdam"},
+    "id": "WF_EVENT_CANCEL_HANDLER"
+  },
+  {
+    "name": "WF_EVENT_RESCHEDULE_HANDLER",
+    "nodes": [
+      {"parameters":{"operation":"get","dataStoreId":"tg_assistant_store","key":"={{'last_created_event:' + $json.user_id}}"},"id":"get_last_re","name":"Get Last Event","type":"n8n-nodes-base.dataStore","typeVersion":1,"position":[-420,120]},
+      {"parameters":{"operation":"update","calendar":"={{$env.CALENDAR_ID}}","eventId":"={{JSON.parse($json.value).event_id}}","updateFields":{"start":"={{$json.reschedule.new_datetime_start_iso}}","end":"={{DateTime.fromISO($json.reschedule.new_datetime_start_iso).plus({minutes:($json.event?.duration_min || 60)}).toISO()}}"}},"id":"upd_event","name":"Update Event","type":"n8n-nodes-base.googleCalendar","typeVersion":1.3,"position":[-180,120],"credentials":{"googleCalendarOAuth2Api":{"id":"={{$env.GOOGLE_CREDENTIAL_ID}}","name":"Google"}}},
+      {"parameters":{"chatId":"={{$json.tg_chat_id}}","text":"=✅ Перенёс встречу на {{DateTime.fromISO($json.reschedule.new_datetime_start_iso).setZone('Europe/Amsterdam').toFormat('dd LLL HH:mm')}}"},"id":"send_re_ok","name":"Send Reschedule OK","type":"n8n-nodes-base.telegram","typeVersion":1.2,"position":[60,120],"credentials":{"telegramApi":{"id":"={{$env.TELEGRAM_BOT_CREDENTIAL_ID}}","name":"Telegram Bot"}}}
+    ],
+    "connections":{"Get Last Event":{"main":[[{"node":"Update Event","type":"main","index":0}]]},"Update Event":{"main":[[{"node":"Send Reschedule OK","type":"main","index":0}]]}},
+    "active": false,
+    "settings": {"timezone":"Europe/Amsterdam"},
+    "id": "WF_EVENT_RESCHEDULE_HANDLER"
+  },
+  {
+    "name": "WF_TODAY_HANDLER",
+    "nodes": [
+      {"parameters":{"operation":"getAll","calendar":"={{$env.CALENDAR_ID}}","returnAll":true,"timeMin":"={{$now.setZone('Europe/Amsterdam').startOf('day').toISO()}}","timeMax":"={{$now.setZone('Europe/Amsterdam').endOf('day').toISO()}}"},"id":"today_events","name":"List Today Events","type":"n8n-nodes-base.googleCalendar","typeVersion":1.3,"position":[-280,100],"credentials":{"googleCalendarOAuth2Api":{"id":"={{$env.GOOGLE_CREDENTIAL_ID}}","name":"Google"}}},
+      {"parameters":{"jsCode":"const rows=items.map(i=>i.json); const list=rows.map((e,idx)=>`${idx+1}) ${DateTime.fromISO(e.start?.dateTime || e.start).setZone('Europe/Amsterdam').toFormat('HH:mm')} ${e.summary || 'Без названия'}`).join('\\n')||'Событий нет'; return [{...$input.first().json, today_text:list}];"},"id":"fmt_today","name":"Format Today","type":"n8n-nodes-base.code","typeVersion":2,"position":[-40,100]},
+      {"parameters":{"chatId":"={{$json.tg_chat_id}}","text":"=🕒 Сегодня:\n{{$json.today_text}}"},"id":"send_today","name":"Send Today","type":"n8n-nodes-base.telegram","typeVersion":1.2,"position":[180,100],"credentials":{"telegramApi":{"id":"={{$env.TELEGRAM_BOT_CREDENTIAL_ID}}","name":"Telegram Bot"}}}
+    ],
+    "connections":{"List Today Events":{"main":[[{"node":"Format Today","type":"main","index":0}]]},"Format Today":{"main":[[{"node":"Send Today","type":"main","index":0}]]}},
+    "active": false,
+    "settings": {"timezone":"Europe/Amsterdam"},
+    "id": "WF_TODAY_HANDLER"
+  }
+]
