@@ -1,131 +1,101 @@
-# Telegram Assistant for n8n (OpenAI + Google Sheets + Google Calendar)
+# n8n Telegram Personal Assistant (OpenAI + Google Sheets + Google Calendar)
 
-## Артефакты
-- `WF_TG_INTAKE_ROUTER.json` — входной роутер Telegram (text/voice/callback), OpenAI intent parser, маршрутизация в handlers.
-- `WF_TG_DOMAIN_HANDLERS.json` — отдельные workflow-хендлеры: идеи, список идей, создание/отмена/перенос событий, `/today`.
-- `WF_REMINDER_DISPATCHER_AND_DIGEST.json` — Cron напоминаний (каждые 2 мин) + утренний дайджест (08:30).
+## 1) Google Sheets template (exact tabs + columns)
+Spreadsheet: `TG_Assistant_DB`
 
-## Краткая схема логики
-1. **WF_TG_INTAKE_ROUTER**
-   - Telegram Trigger принимает `message.text`, `message.voice`, `callback_query`.
-   - Voice: Telegram file download → OpenAI Transcribe.
-   - OpenAI Intent Parser (строго JSON).
-   - Switch по `intent` → Execute Workflow нужного обработчика.
-   - Логирование в лист `Logs`.
-2. **WF_TG_DOMAIN_HANDLERS**
-   - `WF_IDEA_ADD_HANDLER`: append в `Ideas` + Telegram confirm.
-   - `WF_IDEAS_LIST_HANDLER`: читает `Ideas`, фильтрует `status=new`, отправляет ссылку + топ-10.
-   - `WF_EVENT_CREATE_HANDLER`: create event в GCal + `ASSISTANT_UID=<uuid>` в description + запись reminder в `Reminders` + last_created_event в Data Store.
-   - `WF_EVENT_CANCEL_HANDLER`: поддержка `отмени её` через Data Store (`last_created_event`).
-   - `WF_EVENT_RESCHEDULE_HANDLER`: update last event на новое время.
-   - `WF_TODAY_HANDLER`: события на сегодня в TZ Europe/Amsterdam.
-3. **WF_REMINDER_DISPATCHER**
-   - Каждые 2 минуты читает `Reminders`.
-   - Для `status=pending` и `remind_at_iso <= now` отправляет Telegram.
-   - Обновляет строку: `sent`/`error`.
-4. **WF_MORNING_DIGEST** (опционально)
-   - В 08:30 отправляет список событий на сегодня в Telegram.
+### Config
+`key, value, updated_at_iso`
+
+Required keys in `Config`:
+- `timezone` = `Europe/Amsterdam`
+- `default_remind_policy_minutes` = `[60,15]`
+- `quiet_hours_start` = `23`
+- `quiet_hours_end` = `8`
+- `calendar_id` = `primary`
+- `daily_digest_morning` = `09:00`
+- `daily_digest_evening` = `21:30`
+
+### Tasks
+`task_id, created_at_iso, updated_at_iso, user_id, username, title, details, status, priority, due_at_iso, timezone, remind_policy_minutes, next_remind_at_iso, last_reminded_at_iso, calendar_event_id, calendar_sync_token, source, dedupe_key, tg_chat_id, tg_message_id, snooze_until_iso, done_at_iso, canceled_at_iso`
+
+### Ideas
+`idea_id, created_at_iso, user_id, username, category, title, details, tags_json, status, source, dedupe_key, tg_chat_id, tg_message_id`
+
+### Logs
+`log_id, ts_iso, level, workflow, user_id, username, action, intent, source, input_text, payload_json, error`
 
 ---
 
-## Настройка credentials в n8n
-Создайте credentials:
-1. **Telegram Bot API**
-   - Название: `Telegram Bot`
-   - Токен бота (`TELEGRAM_BOT_TOKEN`)
-2. **OpenAI API**
-   - Название: `OpenAI`
-   - API key (`OPENAI_API_KEY`)
-3. **Google OAuth2** (Sheets + Calendar)
-   - Название: `Google`
-   - Доступ к Google Sheets API и Google Calendar API
+## 2) Workflows JSON (for n8n 2.x import)
+- `TG_Inbound_Router.json`
+- `Ideas_Create.json`
+- `Tasks_CreateOrUpdate.json`
+- `Reminder_Worker.json`
+- `Calendar_Sync_5min.json`
 
-> В JSON используются ссылки на env-переменные credential ID (`TELEGRAM_BOT_CREDENTIAL_ID`, `OPENAI_CREDENTIAL_ID`, `GOOGLE_CREDENTIAL_ID`). После импорта можно:
-> - либо проставить реальные credential вручную в каждом node,
-> - либо использовать ваши internal conventions с env substitutions.
+### Import order
+1. `Ideas_Create`
+2. `Tasks_CreateOrUpdate`
+3. `Reminder_Worker`
+4. `Calendar_Sync_5min`
+5. `TG_Inbound_Router`
 
-## Переменные окружения
-Задайте в n8n (Environment Variables):
+---
 
+## 3) Credentials and env
+
+### Credentials
+- Telegram Bot API
+- OpenAI API
+- Google OAuth2 (Sheets + Calendar)
+
+### Env
 ```bash
 TELEGRAM_BOT_TOKEN=...
-OPENAI_API_KEY=...
 SPREADSHEET_ID=...
-SPREADSHEET_URL=https://docs.google.com/spreadsheets/d/<SPREADSHEET_ID>
 CALENDAR_ID=primary
-TIMEZONE=Europe/Amsterdam
+DEFAULT_TIMEZONE=Europe/Amsterdam
+QUIET_HOURS_START=23
+QUIET_HOURS_END=8
+DEFAULT_CHAT_ID=
 
-# IDs credential objects (если используете env substitution)
 TELEGRAM_BOT_CREDENTIAL_ID=...
 OPENAI_CREDENTIAL_ID=...
 GOOGLE_CREDENTIAL_ID=...
-
-# optional
-DEFAULT_DIGEST_CHAT_ID=...
 ```
 
-## Google Sheets: структура листов (строго)
-Создайте Spreadsheet: **TG_Assistant_DB** с листами и колонками:
+Data Store name: `tg_assistant_store`
+- key: `last_calendar_sync` (JSON: `{ "ts": "...ISO..." }`)
 
-### Ideas
-`idea_id, created_at_iso, created_at_local, user_id, username, source_type, category, title, details, tags, status, used_at_iso, link, raw_text, tg_chat_id, tg_message_id`
+---
 
-### Reminders
-`reminder_id, created_at_iso, user_id, username, event_id, assistant_uid, remind_at_iso, remind_at_local, remind_offset_min, message, status, sent_at_iso, canceled_at_iso, error, tg_chat_id`
+## 4) Logic scheme (short)
+1. **TG_Inbound_Router**: Telegram trigger → voice transcribe → OpenAI strict JSON intent → route.
+2. **Ideas_Create**: append row to `Ideas` + Telegram confirmation.
+3. **Tasks_CreateOrUpdate**: upsert to `Tasks` by `dedupe_key`; optional Calendar create; compute `next_remind_at_iso` using policy + quiet hours.
+4. **Reminder_Worker**: cron each minute → due tasks → Telegram reminder with callback buttons (`task_done:<id>`, `task_snooze:<id>:10`, `task_cancel:<id>`) → update task + logs.
+5. **Calendar_Sync_5min**: cron each 5 min → fetch changed events since `last_calendar_sync` → upsert by `calendar_event_id` (via `dedupe_key=calendar:<eventId>`) → set `last_calendar_sync`.
 
-### Settings
-`timezone, default_remind_offset_min, calendar_id, ideas_sheet_name, reminders_sheet_name, logs_sheet_name, morning_digest_time`
+---
 
-### Logs
-`ts_iso, level, user_id, username, action, intent, confidence, text_in, result_json, error`
+## 5) Callback data spec (strict)
+- done: `task_done:<task_id>`
+- snooze: `task_snooze:<task_id>:<minutes>`
+- cancel: `task_cancel:<task_id>`
 
-## Data Store
-Создайте Data Store `tg_assistant_store`.
-- ключ `last_created_event:<user_id>`
-- value JSON: `{"event_id":"...","assistant_uid":"...","start_iso":"...","title":"..."}`
+---
 
-## Импорт workflows
-1. n8n → **Workflows** → **Import from File**.
-2. Импортируйте:
-   - `WF_TG_INTAKE_ROUTER.json`
-   - `WF_TG_DOMAIN_HANDLERS.json`
-   - `WF_REMINDER_DISPATCHER_AND_DIGEST.json`
-3. В каждом workflow проверьте credentials и параметры.
-4. Активируйте workflows.
+## 6) Idempotency rules
+- Tasks upsert uses `dedupe_key` (`task:user:title:date` or `calendar:<eventId>`).
+- Ideas include `dedupe_key` for duplicate filtering downstream.
+- Calendar sync state persisted in Data Store `last_calendar_sync`.
 
-## OpenAI Intent Parser (system prompt)
-Используется внутри node `OpenAI Intent Parser`:
-- intents: `idea_add, ideas_list, event_create, event_cancel, event_reschedule, today_digest, help, unknown`
-- поля: `idea`, `event`, `cancel`, `reschedule`
-- строгий JSON-only output
-- timezone: Europe/Amsterdam
-- обработка относительных дат
+---
 
-## UX сообщений
-- Короткие ответы с маркерами `✅/🕒/🔔`.
-- Для неоднозначных отмен/переносов добавьте inline-кнопки callback data:
-  - `cancel_event:<event_id>`
-  - `reschedule_event:<event_id>`
-  - `choose_event:<event_id>`
+## 7) Acceptance tests
+1. Create/update task from Telegram text → row appears in `Tasks`, no duplicate on retry (same dedupe key).
+2. Voice message: transcription passes through router and reaches Ideas/Tasks flow.
+3. Reminder minute cron sends Telegram with 3 callback buttons and updates task reminder fields.
+4. Calendar sync creates/updates tasks by `calendar_event_id` and advances `last_calendar_sync`.
+5. Errors/warnings are appended to `Logs` with payload and workflow name.
 
-## Приёмочные тесты
-1. **Создание события**
-   - Ввод: `Завтра встреча в 14:00, напомни за час`
-   - Ожидание: событие в GCal создано; в `description` есть `ASSISTANT_UID=...`; в `Reminders` строка `pending` с `remind_at=13:00`; в Telegram подтверждение.
-2. **Отправка напоминания Cron**
-   - При достижении `remind_at_iso` workflow `WF_REMINDER_DISPATCHER` отправляет сообщение в Telegram и обновляет `status=sent`.
-3. **Добавление идеи**
-   - Ввод: `идея для рилса: бэкстейдж раскроя + 3 факта о ткани`
-   - Ожидание: строка в `Ideas` с `category=reels`, `status=new`.
-4. **Команда `/ideas`**
-   - Ожидание: ссылка на таблицу + 10 последних идей со статусом `new`.
-5. **Отмена последнего события**
-   - Ввод: `отмени её` сразу после создания
-   - Ожидание: удаление события из GCal, связанные reminders переводятся в `canceled` (добавьте update-step в cancel handler под ваш режим lookup строк).
-
-## Важно по донастройке
-- В `WF_EVENT_CANCEL_HANDLER` и `WF_EVENT_RESCHEDULE_HANDLER` уже реализован быстрый путь через `last_created_event`.
-- Для полного сценария поиска по ключевым словам и выбора из нескольких событий добавьте ветку:
-  - GCal `getAll` в диапазоне `date_hint ±1 day`
-  - фильтр по `keywords/time_hint`
-  - если >1 результата, Telegram inline keyboard.

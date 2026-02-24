@@ -1,0 +1,40 @@
+{
+  "name": "Ideas_Create",
+  "nodes": [
+    {
+      "parameters": {
+        "jsCode": "const i = $json.idea || {};\nconst id = crypto.randomUUID();\nreturn [{...$json,\n idea_id:id,\n created_at_iso:$now.toISO(),\n category:(i.category||'general'),\n title:(i.title||$json.text_in||'Идея'),\n details:(i.details||''),\n tags:JSON.stringify(i.tags||[]),\n status:'new',\n dedupe_key:`idea:${$json.user_id}:${(i.title||$json.text_in||'').toLowerCase().trim()}`\n}];"
+      },
+      "id": "prep",
+      "name": "Prepare Idea",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-460, 120]
+    },
+    {
+      "parameters": { "operation": "append", "documentId": "={{$env.SPREADSHEET_ID}}", "sheetName": "Ideas", "columns": { "mappingMode": "defineBelow", "value": { "idea_id": "={{$json.idea_id}}", "created_at_iso": "={{$json.created_at_iso}}", "user_id": "={{$json.user_id}}", "username": "={{$json.username}}", "category": "={{$json.category}}", "title": "={{$json.title}}", "details": "={{$json.details}}", "tags_json": "={{$json.tags}}", "status": "new", "source": "={{$json.source_type}}", "dedupe_key": "={{$json.dedupe_key}}", "tg_chat_id": "={{$json.tg_chat_id}}", "tg_message_id": "={{$json.tg_message_id}}" } } },
+      "id": "append",
+      "name": "Append Idea",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4,
+      "position": [-220, 120],
+      "credentials": { "googleSheetsOAuth2Api": { "id": "={{$env.GOOGLE_CREDENTIAL_ID}}", "name": "Google" } }
+    },
+    {
+      "parameters": { "chatId": "={{$json.tg_chat_id}}", "text": "=✅ Идея сохранена: {{$json.title}}" },
+      "id": "ok",
+      "name": "Telegram Confirm",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1,
+      "position": [20, 120],
+      "credentials": { "telegramApi": { "id": "={{$env.TELEGRAM_BOT_CREDENTIAL_ID}}", "name": "Telegram Bot" } }
+    }
+  ],
+  "connections": {
+    "Prepare Idea": { "main": [[{ "node": "Append Idea", "type": "main", "index": 0 }]] },
+    "Append Idea": { "main": [[{ "node": "Telegram Confirm", "type": "main", "index": 0 }]] }
+  },
+  "settings": { "timezone": "Europe/Amsterdam" },
+  "active": false,
+  "id": "Ideas_Create"
+}

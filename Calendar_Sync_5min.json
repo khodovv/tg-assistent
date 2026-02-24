@@ -1,0 +1,23 @@
+{
+  "name": "Calendar_Sync_5min",
+  "nodes": [
+    { "parameters": { "rule": { "interval": [{ "field": "minutes", "minutesInterval": 5 }] } }, "id": "cron", "name": "Cron every 5 min", "type": "n8n-nodes-base.cron", "typeVersion": 1, "position": [-780, 180] },
+    { "parameters": { "operation": "get", "dataStoreId": "tg_assistant_store", "key": "last_calendar_sync" }, "id": "get_sync", "name": "Get last_calendar_sync", "type": "n8n-nodes-base.dataStore", "typeVersion": 1, "position": [-560, 180] },
+    { "parameters": { "jsCode": "const v = $json.value ? JSON.parse($json.value) : {}; const t = v.ts || DateTime.now().minus({days:1}).toISO(); return [{sync_from_iso:t}];" }, "id": "set_from", "name": "Build Sync From", "type": "n8n-nodes-base.code", "typeVersion": 2, "position": [-340, 180] },
+    { "parameters": { "operation": "getAll", "calendar": "={{$env.CALENDAR_ID}}", "returnAll": true, "timeMin": "={{$json.sync_from_iso}}" }, "id": "gcal", "name": "Fetch Changed Events", "type": "n8n-nodes-base.googleCalendar", "typeVersion": 1, "position": [-120, 180], "credentials": { "googleCalendarOAuth2Api": { "id": "={{$env.GOOGLE_CREDENTIAL_ID}}", "name": "Google" } } },
+    { "parameters": { "jsCode": "return items.map(i=>{const e=i.json; const dedupe=`calendar:${e.id}`; const start=e.start?.dateTime||e.start?.date||''; const next = start ? DateTime.fromISO(start).minus({minutes:60}).toISO() : ''; return {json:{task_id: crypto.randomUUID(), created_at_iso:$now.toISO(), updated_at_iso:$now.toISO(), user_id:'calendar', username:'calendar_sync', title:e.summary||'Calendar event', details:e.description||'', status:'open', priority:'normal', due_at_iso:start, timezone:$env.DEFAULT_TIMEZONE||'Europe/Amsterdam', remind_policy_minutes:'[60,15]', next_remind_at_iso:next, last_reminded_at_iso:'', calendar_event_id:e.id, calendar_sync_token:'', source:'calendar', dedupe_key:dedupe, tg_chat_id:$env.DEFAULT_CHAT_ID||'', tg_message_id:'', snooze_until_iso:'', done_at_iso:'', canceled_at_iso:''}}});" }, "id": "map", "name": "Map Event->Task", "type": "n8n-nodes-base.code", "typeVersion": 2, "position": [100, 180] },
+    { "parameters": { "operation": "appendOrUpdate", "documentId": "={{$env.SPREADSHEET_ID}}", "sheetName": "Tasks", "columns": { "matchingColumns": ["dedupe_key"], "mappingMode": "autoMapInputData" } }, "id": "upsert", "name": "Upsert Tasks", "type": "n8n-nodes-base.googleSheets", "typeVersion": 4, "position": [320, 180], "credentials": { "googleSheetsOAuth2Api": { "id": "={{$env.GOOGLE_CREDENTIAL_ID}}", "name": "Google" } } },
+    { "parameters": { "operation": "set", "dataStoreId": "tg_assistant_store", "key": "last_calendar_sync", "value": "={{JSON.stringify({ts:$now.toISO()})}}" }, "id": "set_sync", "name": "Set last_calendar_sync", "type": "n8n-nodes-base.dataStore", "typeVersion": 1, "position": [540, 180] }
+  ],
+  "connections": {
+    "Cron every 5 min": { "main": [[{ "node": "Get last_calendar_sync", "type": "main", "index": 0 }]] },
+    "Get last_calendar_sync": { "main": [[{ "node": "Build Sync From", "type": "main", "index": 0 }]] },
+    "Build Sync From": { "main": [[{ "node": "Fetch Changed Events", "type": "main", "index": 0 }]] },
+    "Fetch Changed Events": { "main": [[{ "node": "Map Event->Task", "type": "main", "index": 0 }]] },
+    "Map Event->Task": { "main": [[{ "node": "Upsert Tasks", "type": "main", "index": 0 }]] },
+    "Upsert Tasks": { "main": [[{ "node": "Set last_calendar_sync", "type": "main", "index": 0 }]] }
+  },
+  "settings": { "timezone": "Europe/Amsterdam" },
+  "active": false,
+  "id": "Calendar_Sync_5min"
+}
